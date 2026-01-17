@@ -1,6 +1,6 @@
 use crate::paths;
 use anyhow::{Context, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const REPO_NAME: &str = "whatsapp-backup-encrypted";
@@ -98,16 +98,45 @@ pub fn create_github_repo() -> Result<String> {
 
 /// Commits and pushes a backup file using git CLI
 pub fn commit_and_push(file_path: &Path, message: &str) -> Result<()> {
+    commit_and_push_files(&[file_path.to_path_buf()], message)
+}
+
+/// Removes old backup chunks from the repo before pushing new ones
+fn remove_old_chunks(repo_dir: &Path) -> Result<()> {
+    for entry in std::fs::read_dir(repo_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+        // Remove old chunks (.enc.001, etc) and manifests
+        if (name.contains(".enc.") && !name.ends_with(".enc"))
+            || name.ends_with(".manifest")
+        {
+            std::fs::remove_file(&path).ok();
+        }
+    }
+    Ok(())
+}
+
+/// Commits and pushes multiple files using git CLI
+pub fn commit_and_push_files(files: &[PathBuf], message: &str) -> Result<()> {
     let repo_dir = paths::github_repo_dir()?;
 
-    // Copy file to repo
-    let file_name = file_path.file_name().context("Invalid file path")?;
-    let dest_path = repo_dir.join(file_name);
-    std::fs::copy(file_path, &dest_path).context("Failed to copy file to repo")?;
+    // Remove old chunks before adding new ones
+    remove_old_chunks(&repo_dir)?;
 
-    // git add
+    // Copy all files to repo
+    let mut file_names = Vec::new();
+    for file_path in files {
+        let file_name = file_path.file_name().context("Invalid file path")?;
+        let dest_path = repo_dir.join(file_name);
+        std::fs::copy(file_path, &dest_path).context("Failed to copy file to repo")?;
+        file_names.push(file_name.to_string_lossy().to_string());
+    }
+
+    // git add all files (use -A to also stage deletions of old chunks)
     let output = Command::new("git")
-        .args(["add", &file_name.to_string_lossy()])
+        .args(["add", "-A"])
         .current_dir(&repo_dir)
         .output()
         .context("Failed to run git add")?;

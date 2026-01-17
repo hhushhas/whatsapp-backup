@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.0] - 2026-01-18
+
+### Added
+- Chunked uploads for GitHub: large backups (>90MB) are split into 90MB chunks
+- Manifest files with SHA256 checksums for integrity verification
+- Automatic reassembly of chunked backups during restore
+
+### Changed
+- `list` command now groups chunks as single backup entries
+- Old chunks are automatically removed before pushing new backups
+- Cleanup logic handles `.enc.001`, `.manifest` files alongside `.enc`
+
 ## [0.1.0] - 2026-01-18
 
 ### Added
