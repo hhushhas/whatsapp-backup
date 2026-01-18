@@ -11,6 +11,7 @@
 - `list` command now groups chunks as single backup entries
 - Old chunks are automatically removed before pushing new backups
 - Cleanup logic handles `.enc.001`, `.manifest` files alongside `.enc`
+- Chunks pushed incrementally (one commit per file) to avoid GitHub rate limits
 
 ## [0.1.0] - 2026-01-18
 

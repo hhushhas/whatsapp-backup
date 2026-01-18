@@ -118,23 +118,14 @@ fn remove_old_chunks(repo_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Commits and pushes multiple files using git CLI
+/// Commits and pushes multiple files using git CLI (incrementally to avoid GitHub limits)
 pub fn commit_and_push_files(files: &[PathBuf], message: &str) -> Result<()> {
     let repo_dir = paths::github_repo_dir()?;
 
     // Remove old chunks before adding new ones
     remove_old_chunks(&repo_dir)?;
 
-    // Copy all files to repo
-    let mut file_names = Vec::new();
-    for file_path in files {
-        let file_name = file_path.file_name().context("Invalid file path")?;
-        let dest_path = repo_dir.join(file_name);
-        std::fs::copy(file_path, &dest_path).context("Failed to copy file to repo")?;
-        file_names.push(file_name.to_string_lossy().to_string());
-    }
-
-    // git add all files (use -A to also stage deletions of old chunks)
+    // Stage deletions first
     let output = Command::new("git")
         .args(["add", "-A"])
         .current_dir(&repo_dir)
@@ -146,31 +137,72 @@ pub fn commit_and_push_files(files: &[PathBuf], message: &str) -> Result<()> {
         anyhow::bail!("git add failed: {}", stderr);
     }
 
-    // git commit
+    // Commit deletions if any
     let output = Command::new("git")
-        .args(["commit", "-m", message])
+        .args(["commit", "-m", "Remove old backup chunks"])
         .current_dir(&repo_dir)
         .output()
         .context("Failed to run git commit")?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        // Ignore "nothing to commit" error
-        if !stderr.contains("nothing to commit") {
-            anyhow::bail!("git commit failed: {}", stderr);
+    // Push deletions (ignore if nothing to commit)
+    if output.status.success() {
+        let output = Command::new("git")
+            .args(["push", "-u", "origin", "main"])
+            .current_dir(&repo_dir)
+            .output()
+            .context("Failed to run git push")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("git push failed: {}", stderr);
         }
     }
 
-    // git push
-    let output = Command::new("git")
-        .args(["push", "-u", "origin", "main"])
-        .current_dir(&repo_dir)
-        .output()
-        .context("Failed to run git push")?;
+    // Push each file incrementally
+    let total = files.len();
+    for (i, file_path) in files.iter().enumerate() {
+        let file_name = file_path.file_name().context("Invalid file path")?;
+        let dest_path = repo_dir.join(file_name);
+        std::fs::copy(file_path, &dest_path).context("Failed to copy file to repo")?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git push failed: {}", stderr);
+        // git add
+        let output = Command::new("git")
+            .args(["add", &file_name.to_string_lossy()])
+            .current_dir(&repo_dir)
+            .output()
+            .context("Failed to run git add")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("git add failed: {}", stderr);
+        }
+
+        // git commit
+        let commit_msg = format!("{} ({}/{})", message, i + 1, total);
+        let output = Command::new("git")
+            .args(["commit", "-m", &commit_msg])
+            .current_dir(&repo_dir)
+            .output()
+            .context("Failed to run git commit")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !stderr.contains("nothing to commit") {
+                anyhow::bail!("git commit failed: {}", stderr);
+            }
+        }
+
+        // git push
+        let output = Command::new("git")
+            .args(["push", "-u", "origin", "main"])
+            .current_dir(&repo_dir)
+            .output()
+            .context("Failed to run git push")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("git push failed for {}: {}", file_name.to_string_lossy(), stderr);
+        }
     }
 
     Ok(())
