@@ -1,9 +1,10 @@
 # whatsapp-backup
 
-Encrypted backup of WhatsApp Desktop (macOS) to local storage + Google Drive.
+Encrypted backup of WhatsApp Desktop (macOS) to GitHub + Google Drive.
 
 ```
 WhatsApp Desktop → tar.gz → AES-256-GCM → ~/.whatsapp-backups/
+                                       → GitHub (chunked for large files)
                                        → Google Drive (if installed)
 ```
 
@@ -47,9 +48,9 @@ src/
 | ------------- | ---------------------------------------------------------------- |
 | WhatsApp data | `~/Library/Group Containers/group.net.whatsapp.WhatsApp.shared/` |
 | Backups       | `~/.whatsapp-backups/*.enc`                                      |
+| GitHub chunks | `~/whatsapp-backup-encrypted/*.enc.001`, `.002`, `.manifest`     |
 | Config        | `~/.config/whatsapp-backup/config.json`                          |
 | Logs          | `~/Library/Logs/whatsapp-backup/`                                |
-| GitHub repo   | `~/whatsapp-backup-encrypted/`                                   |
 | launchd plist | `~/Library/LaunchAgents/com.user.whatsapp-backup.plist`          |
 
 ## Encryption
@@ -67,40 +68,86 @@ src/
 2. Create `tar.gz` archive
 3. Encrypt with passphrase from Keychain
 4. Save to `~/.whatsapp-backups/YYYY-MM-DD_HH-MM-SS.enc`
-5. Copy to Google Drive (if detected)
-6. Skip GitHub push if >100MB (GitHub limit)
-7. Delete backups older than 7 days
+5. If >90MB: split into 90MB chunks + manifest (for GitHub)
+6. Push to GitHub (chunks pushed incrementally)
+7. Copy full `.enc` to Google Drive (if detected)
+8. Delete backups older than 7 days
+
+## Chunked Uploads
+
+Large backups (>90MB) are split into chunks for GitHub:
+
+```
+backup.enc (667MB) → backup.enc.001 (90MB)
+                   → backup.enc.002 (90MB)
+                   → ...
+                   → backup.enc.008 (37MB)
+                   → backup.enc.manifest (JSON)
+```
+
+**Manifest format:**
+```json
+{
+  "version": 1,
+  "timestamp": "2026-01-18_05-59-34",
+  "original_size": 667210548,
+  "chunk_size": 90000000,
+  "chunks": [
+    {"name": "2026-01-18_05-59-34.enc.001", "size": 90000000},
+    ...
+  ],
+  "sha256": "59b5783c..."
+}
+```
+
+Chunks are pushed one at a time to avoid GitHub rate limits.
 
 ## Restore
 
+**From local backup:**
 ```bash
 whatsapp-backup restore ~/.whatsapp-backups/2026-01-17_19-41-14.enc -o ./restore
+```
 
-# Manual restore to WhatsApp:
+**From GitHub (chunked backup):**
+```bash
+# Pull latest from GitHub repo
+cd ~/whatsapp-backup-encrypted && git pull
+
+# Restore using the manifest file
+whatsapp-backup restore ~/whatsapp-backup-encrypted/2026-01-18_05-59-34.enc.manifest -o ./restore
+```
+
+The restore command auto-detects chunked backups, reassembles chunks, verifies SHA256, then decrypts.
+
+**Manual restore to WhatsApp:**
+```bash
 # 1. Quit WhatsApp Desktop
-# 2. cp -r ./restore/whatsapp-data/* ~/Library/Group\ Containers/group.net.whatsapp.WhatsApp.shared/
+# 2. Copy restored data:
+cp -r ./restore/whatsapp-data/* ~/Library/Group\ Containers/group.net.whatsapp.WhatsApp.shared/
 # 3. Reopen WhatsApp
 ```
 
 ## Dependencies
 
-| Crate              | Purpose              |
-| ------------------ | -------------------- |
-| clap               | CLI parsing          |
-| aes-gcm            | Encryption           |
-| argon2             | Key derivation       |
-| tar + flate2       | Archive creation     |
-| chrono             | Timestamps           |
-| dirs               | Path detection       |
-| serde + serde_json | Config serialization |
+| Crate              | Purpose               |
+| ------------------ | --------------------- |
+| clap               | CLI parsing           |
+| aes-gcm            | Encryption            |
+| argon2             | Key derivation        |
+| sha2               | Chunk integrity (SHA256) |
+| tar + flate2       | Archive creation      |
+| chrono             | Timestamps            |
+| dirs               | Path detection        |
+| serde + serde_json | Config/manifest       |
 
 **External:** `gh` CLI (GitHub repo creation), `git` (push), `security` (Keychain)
 
 ## Limitations
 
-- GitHub push skipped for files >100MB (WhatsApp data often 500MB+)
-- Google Drive sync requires manual installation of Google Drive for Desktop
 - macOS only (uses Keychain, launchd)
+- Google Drive sync requires manual installation of Google Drive for Desktop
+- GitHub push may be slow for large backups (chunks pushed sequentially)
 
 ## Config (config.json)
 
